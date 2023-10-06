@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stage</title>
+  <script src="https://web-broadcast.live-video.net/1.3.2/amazon-ivs-web-broadcast.js"></script>
+</head>
+
+<body>
+  <h1>Stage Implementation</h1>
+  <template id="stagesGuestTemplate">
+    <video class="participant-video" autoplay></video>
+    <div class="participant-col">
+      <small class="participant-name"></small>
+    </div>
+    <div>
+      <button type="button" class="settings-btn">Cam/Mic Settings</button>
+    </div>
+  </template>
+  <div id="participants"></div>
+  <script>
+    const { Stage, SubscribeType, LocalStageStream, StageEvents, StreamType, BroadcastSession } = IVSBroadcastClient;
+
+    let
+      audioDevices,
+      videoDevices,
+      selectedAudioDeviceId,
+      selectedVideoDeviceId,
+      videoStream,
+      audioStream,
+      stageConfig,
+      username = `User${Math.floor(Math.random() * 10)}`,
+      stageName = `Stage${Math.floor(Math.random() * 10)}`,
+      stageParticipantToken,
+      stage,
+      participantIds = [];
+
+    const layouts = [
+      [{ height: 720, width: 1280, x: 320, y: 180 }],
+      [{ height: 450, width: 800, x: 80, y: 315 }, { height: 450, width: 800, x: 1040, y: 315 }],
+      [{ height: 450, width: 800, x: 80, y: 45 }, { height: 450, width: 800, x: 1040, y: 45 }, { height: 450, width: 800, x: 560, y: 585 }],
+      [{ height: 450, width: 800, x: 80, y: 45 }, { height: 450, width: 800, x: 1040, y: 45 }, { height: 450, width: 800, x: 80, y: 585 }, { height: 450, width: 800, x: 1040, y: 585 }],
+      [{ height: 337, width: 600, x: 20, y: 100 }, { height: 337, width: 600, x: 650, y: 100 }, { height: 337, width: 600, x: 1280, y: 100 }, { height: 337, width: 600, x: 340, y: 640 }, { height: 337, width: 600, x: 980, y: 640 }],
+      [{ height: 337, width: 600, x: 20, y: 100 }, { height: 337, width: 600, x: 650, y: 100 }, { height: 337, width: 600, x: 1280, y: 100 }, { height: 337, width: 600, x: 20, y: 640 }, { height: 337, width: 600, x: 650, y: 640 }, { height: 337, width: 600, x: 1280, y: 640 }]
+    ];
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      try {
+        await handlePermissions();
+        await getDevices();
+        await createVideoStream();
+        await createAudioStream();
+        stage = await getStageConfig(stageName);
+        stageParticipantToken = await getStageParticipantToken(stage.data.name, username);
+        await initStage();
+      } catch (error) {
+        console.log(error.message)
+      }
+    });
+
+    const handlePermissions = async () => {
+      let permissions;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        for (const track of stream.getTracks()) {
+          track.stop();
+        }
+        permissions = { video: true, audio: true };
+      }
+      catch (err) {
+        permissions = { video: false, audio: false };
+        console.error(err.message);
+      }
+      if (!permissions.video) {
+        console.error('Failed to get video permissions.');
+      } else if (!permissions.audio) {
+        console.error('Failed to get audio permissions.');
+      }
+    };
+
+    const getDevices = async () => {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      videoDevices = devices.filter((d) => d.kind === 'videoinput');
+      audioDevices = devices.filter((d) => d.kind === 'audioinput');
+      selectedVideoDeviceId = videoDevices[0].deviceId;
+      selectedAudioDeviceId = audioDevices[0].deviceId;
+    };
+
+    const createVideoStream = async () => {
+      videoStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          deviceId: {
+            exact: selectedVideoDeviceId
+          },
+          width: {
+            ideal: 1280,
+            max: 1280,
+          },
+          height: {
+            ideal: 720,
+            max: 720,
+          },
+          frameRate: {
+            max: 30,
+          },
+        },
+      });
+    };
+
+    const createAudioStream = async () => {
+      audioStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          deviceId: selectedAudioDeviceId
+        },
+      });
+    };
+
+    const getStageParticipantToken = async (stageName, username) => {
+      const stageTokenRequest = await fetch('http://localhost:5000/api/stage-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, stageName }),
+      });
+      const token = await stageTokenRequest.json();
+      console.log(token, 'token')
+      return token;
+    };
+
+    const getStageConfig = async (name) => {
+      const stageRequest = await fetch('http://localhost:5000/api/stage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      const stage = await stageRequest.json();
+      console.log(stage, 'stage')
+      return stage;
+    };
+
+    const initStage = async () => {
+      console.log('first')
+      const strategy = {
+        shouldSubscribeToParticipant: (participant) => {
+          return SubscribeType.AUDIO_VIDEO;
+        },
+        shouldPublishParticipant: (participant) => {
+          return true;
+        },
+        stageStreamsToPublish: () => {
+          const videoTrack = videoStream.getVideoTracks()[0]
+          const audioTrack = audioStream.getAudioTracks()[0]
+          const streamsToPublish = [
+            new LocalStageStream(videoTrack),
+            new LocalStageStream(audioTrack)
+          ];
+          return streamsToPublish;
+        },
+      };
+
+      try {
+        const data = stageParticipantToken?.data
+        if (data) {
+          stage = new Stage(data.token, strategy);
+          stage.on(StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED, (participant, streams) => {
+            renderParticipant(participant, streams);
+            participantIds.push(participant.id)
+            renderVideosToClient(participant, streams.find(s => s.streamType === StreamType.VIDEO));
+            updateVideoCompositions();
+
+          });
+
+          stage.on(StageEvents.STAGE_PARTICIPANT_STREAMS_REMOVED, (participant, streams) => {
+            const participantId = participant.id;
+            const pIdx = participantIds.findIndex(id => id === participantId);
+            participantIds.splice(pIdx, 1);
+            const videoTrackId = `video-${participantId}`;
+            const audioTrackId = `audio-${participantId}`;
+            if (broadcastClient.getVideoInputDevice(videoTrackId)) broadcastClient.removeVideoInputDevice(videoTrackId);
+            if (broadcastClient.getAudioInputDevice(audioTrackId)) broadcastClient.removeAudioInputDevice(audioTrackId);
+            const videoId = `${participant.id}-video`
+            document.getElementById(videoId).closest('.participant-col').remove();
+          });
+          await stage.join();
+        }
+      }
+      catch (error) {
+        console.log(error.message)
+      }
+    }
+
+    const renderParticipant = (participant, streams) => {
+      const guestTemplate = document.getElementById('stagesGuestTemplate');
+      const newGuestEl = guestTemplate.content.cloneNode(true);
+
+      newGuestEl.querySelector('.participant-col').setAttribute('data-participant-id', participant.id);
+      newGuestEl.querySelector('.participant-name').textContent = participant.attributes.username;
+
+      let streamsToDisplay = streams;
+      if (participant.isLocal) {
+        streamsToDisplay = streams.filter(stream => stream.streamType === StreamType.VIDEO)
+      }
+
+      const videoEl = newGuestEl.querySelector('.participant-video');
+      videoEl.setAttribute('id', `${participant.id}-video`);
+      const mediaStream = new MediaStream();
+      streamsToDisplay.forEach(stream => {
+        mediaStream.addTrack(stream.mediaStreamTrack);
+      });
+      videoEl.srcObject = mediaStream;
+      document.getElementById('participants').appendChild(newGuestEl);
+    };
+
+    const cleanUp = () => {
+      if (stage) stage.leave();
+    };
+
+    const renderVideosToClient = async (participant, stream) => {
+      const participantId = participant.id;
+      const videoId = `video-${participantId}`;
+
+      // get the index of this participantId
+      const pIdx = participantIds.indexOf(participantId);
+
+      let composition = layouts[participantIds.length - 1][pIdx];
+      config.index = 2;
+
+      const mediaStream = new MediaStream();
+      mediaStream.addTrack(stream.mediaStreamTrack);
+      broadcastClient.addVideoInputDevice(mediaStream, videoId, composition);
+    };
+
+    const updateVideoCompositions = async () => {
+      let idx = 0;
+      for (const p of participantIds) {
+        const videoId = `video-${p}`;
+        let config = layouts[filteredParticipantIds.length - 1][idx];
+        config.index = 2;
+        broadcastClient.updateVideoDeviceComposition(videoId, config);
+        idx = idx + 1;
+      }
+    };
+
+    document.addEventListener("beforeunload", cleanUp);
+
+  </script>
+</body>
+
+</html>
